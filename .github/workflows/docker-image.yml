@@ -1,0 +1,41 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - main  # 在 main 分支推送时触发
+    tags:
+      - 'v*'  # 在以 'v' 开头的标签推送时触发
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  DOCKER_HUB_REPOSITORY: nixingshiguang/biliup  # 替换为你的 Docker Hub 仓库名
+  DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}  # Docker Hub 用户名
+  DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}  # Docker Hub Personal Access Token
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        run: echo "$DOCKER_HUB_TOKEN" | docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
+
+      - name: Get current date
+        id: date
+        run: echo "CURRENT_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: docker build -t $DOCKER_HUB_REPOSITORY:latest .
+
+      - name: Tag Docker image with date
+        run: |
+          docker tag $DOCKER_HUB_REPOSITORY:latest $DOCKER_HUB_REPOSITORY:${{ env.CURRENT_DATE }}
+
+      - name: Push Docker images
+        run: |
+          docker push $DOCKER_HUB_REPOSITORY:latest
+          docker push $DOCKER_HUB_REPOSITORY:${{ env.CURRENT_DATE }}
