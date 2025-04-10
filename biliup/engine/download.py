@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 import logging
 import os
 import queue
@@ -11,7 +12,7 @@ import shutil
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, List, Callable, Optional
 from urllib.parse import urlparse
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 
 import requests
 from requests.utils import DEFAULT_ACCEPT_ENCODING
@@ -59,13 +60,14 @@ class DownloadBase(ABC):
         self.opt_args = opt_args
         self.live_cover_url = None
         self.fake_headers = {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'accept-encoding': DEFAULT_ACCEPT_ENCODING,
-            'accept-language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
-            'user-agent': random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': DEFAULT_ACCEPT_ENCODING,
+            'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
+            'User-Agent': random_user_agent(),
         }
         self.segment_time = config.get('segment_time', '01:00:00')
         self.time_range = config.get('time_range')
+        self.excluded_keywords = config.get('excluded_keywords')
         self.file_size = config.get('file_size')
 
         # 是否是下载模式 跳过下播检测
@@ -87,9 +89,18 @@ class DownloadBase(ABC):
         # is_check 是否是检测模式 检测模式可以忽略只有下载时需要的耗时操作
         raise NotImplementedError()
 
-    def pre_check(self):
-        if check_timerange(self.fname):
-            return True
+    def should_record(self):
+        # 检查房间名
+        keywords = config['streamers'].get(self.fname, {}).get('excluded_keywords')
+        if self.room_title and keywords:
+            if any(k.strip() in self.room_title for k in keywords):
+                return False
+
+        # 检查时间范围
+        if not check_timerange(self.fname):
+            return False
+
+        return True
 
     def download(self):
         logger.info(f"{self.plugin_msg}: Start downloading {self.raw_stream_url}")
@@ -205,17 +216,20 @@ class DownloadBase(ABC):
                 '-c',
                 'copy',
             ]
-            if use_streamlink:
+            # https://github.com/biliup/biliup/issues/991
+            if use_streamlink and not self.raw_stream_url.startswith('http://localhost:'):
                 streamlink_cmd = [
                     'streamlink',
                     '--stream-segment-threads', '3',
-                    '--hls-playlist-reload-attempts', '1',
-                    '--http-header',
-                    ';'.join([f'{key}={value}' for key, value in self.fake_headers.items()]),
+                    '--hls-playlist-reload-attempts', '1'
+                ]
+                for key, value in self.fake_headers.items():
+                    streamlink_cmd.extend(['--http-header', f'{key}={value}'])
+                streamlink_cmd.extend([
                     self.raw_stream_url,
                     'best',
                     '-O'
-                ]
+                ])
                 streamlink_proc = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE)
                 input_uri = 'pipe:0'
             else:
@@ -313,7 +327,7 @@ class DownloadBase(ABC):
 
     def run(self):
         try:
-            if not asyncio.run_coroutine_threadsafe(self.acheck_stream(), loop).result() or not self.pre_check():
+            if not asyncio.run_coroutine_threadsafe(self.acheck_stream(), loop).result() or not self.should_record():
                 return False
             with SessionLocal() as db:
                 update_room_title(db, self.database_row_id, self.room_title)
@@ -537,7 +551,10 @@ def sync_download(stream_url, headers, segment_duration=60, max_file_size=100, o
     def upload(video_queue, stream_info, stop_event: threading.Event):
         with SessionLocal() as db:
             data = get_stream_info(db, f"{stream_info['name']}")
-        data, _ = fmt_title_and_desc({**data, "name": stream_info['name']})
+        data = {**data, "name": stream_info['name']}
+        if "title" not in data:
+            data["title"] = stream_info.get("title", "")
+        data, _ = fmt_title_and_desc(data)
         stream_info.update(data)
         logger.info(f"stream_info: {stream_info}")
         # 获取 BiliWebAsync.__init__ 的参数名
@@ -585,41 +602,40 @@ def get_valid_filename(name):
     return s
 
 
-def get_duration(segment_time_str, time_range):
+def get_duration(segment_time_str, time_range_str):
     """
     计算当前时间到给定结束时间的时差
     如果计算的时差大于segment_time，则返回segment_time。
     """
-    if not time_range or '-' not in time_range:
-        return segment_time_str
-    end_time_str = time_range.split('-')[1]
-
-    now = datetime.now()
-    end_time_today_str = now.strftime("%Y-%m-%d") + " " + end_time_str
-    end_time_today = datetime.strptime(end_time_today_str, "%Y-%m-%d %H:%M:%S")
-    # 判断结束时间是否是第二天的时间
-    if now > end_time_today:
-        end_time_today += timedelta(days=1)
-
-    time_diff = end_time_today - now
-    if segment_time_str:
-        segment_time_parts = list(map(int, segment_time_str.split(":")))
-        segment_time = timedelta(hours=segment_time_parts[0],
-                                 minutes=segment_time_parts[1], seconds=segment_time_parts[2])
-
-        if time_diff > segment_time:
+    try:
+        time_range = json.loads(time_range_str)
+        if not isinstance(time_range, (list, tuple)) or len(time_range) != 2:
             return segment_time_str
+        end_time = datetime.fromisoformat(time_range[1].replace('Z', '+00:00')).time()
+    except Exception as e:
+        return segment_time_str
 
-    # 增加10s，防止time_diff过小多次执行下载
-    if time_diff.total_seconds() <= 60:
-        time_diff = time_diff + timedelta(seconds=10)
+    now = datetime.now(timezone.utc).time()
+    now_sec = now.hour * 3600 + now.minute * 60 + now.second
+    end_sec = end_time.hour * 3600 + end_time.minute * 60 + end_time.second
 
-    hours, remainder = divmod(time_diff.total_seconds(), 3600)
-    minutes, seconds = divmod(remainder, 60)
+    # 计算到结束时间的秒数
+    diff = end_sec - now_sec if end_sec >= now_sec else (24 * 3600 - now_sec + end_sec)
 
-    to_parameter = f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}"
+    try:
+        h, m, s = map(int, segment_time_str.split(':'))
+        segment_sec = h * 3600 + m * 60 + s
+    except Exception:
+        return segment_time_str
 
-    return to_parameter
+    if diff > segment_sec:
+        return segment_time_str
+
+    hours = diff // 3600
+    minutes = (diff % 3600) // 60
+    seconds = diff % 60
+
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
 class BatchCheck(ABC):

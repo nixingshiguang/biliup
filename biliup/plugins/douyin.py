@@ -18,11 +18,11 @@ class Douyin(DownloadBase):
     def __init__(self, fname, url, suffix='flv'):
         super().__init__(fname, url, suffix)
         self.douyin_danmaku = config.get('douyin_danmaku', False)
-        self.fake_headers['user-agent'] = DouyinUtils.DOUYIN_USER_AGENT
-        self.fake_headers['referer'] = "https://live.douyin.com/"
-        self.fake_headers['cookie'] = config.get('user', {}).get('douyin_cookie', '')
+        self.fake_headers['User-Agent'] = DouyinUtils.DOUYIN_USER_AGENT
+        self.fake_headers['Referer'] = "https://live.douyin.com/"
+        self.fake_headers['Cookie'] = config.get('user', {}).get('douyin_cookie', '')
         self.douyin_quality = config.get('douyin_quality', 'origin')
-        self.douyin_protocol = config.get('douyin_protocol', 'hls')
+        self.douyin_protocol = config.get('douyin_protocol', 'flv')
         self.douyin_double_screen = config.get('douyin_double_screen', False)
         self.__web_rid = None # 网页端房间号 或 抖音号
         self.__room_id = None # 单场直播的直播房间
@@ -30,8 +30,8 @@ class Douyin(DownloadBase):
 
     async def acheck_stream(self, is_check=False):
 
-        if "ttwid" not in self.fake_headers['cookie']:
-            self.fake_headers['Cookie'] = f'ttwid={DouyinUtils.get_ttwid()};{self.fake_headers["cookie"]}'
+        if "ttwid" not in self.fake_headers['Cookie']:
+            self.fake_headers['Cookie'] = f'ttwid={DouyinUtils.get_ttwid()};{self.fake_headers["Cookie"]}'
 
         if "v.douyin" in self.url:
             try:
@@ -107,6 +107,7 @@ class Douyin(DownloadBase):
                 logger.debug(f"{self.plugin_msg}: 未开播")
                 return False
             self.__room_id = room_info['id_str']
+            self.room_title = room_info['title']
         except:
             logger.exception(f"{self.plugin_msg}: 获取直播间信息失败")
             return False
@@ -158,7 +159,6 @@ class Douyin(DownloadBase):
 
             protocol = 'hls' if self.douyin_protocol == 'hls' else 'flv'
             self.raw_stream_url = stream_data[quality]['main'][protocol].replace('http://', 'https://')
-            self.room_title = room_info['title']
         except:
             logger.exception(f"{self.plugin_msg}: 寻找清晰度失败")
             return False

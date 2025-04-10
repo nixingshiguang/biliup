@@ -78,6 +78,7 @@ const TemplateModal: React.FC<TemplateModalProps> = ({ children, entity, onOk })
       remark: values?.remark?.trim(),
       url: values?.url?.trim(),
       format: values?.format?.trim(),
+      time_range: JSON.stringify(values?.time_range?.map((date: Date) => date.toISOString())),
     }
     await onOk(values)
     setVisible(false)
@@ -103,6 +104,15 @@ const TemplateModal: React.FC<TemplateModalProps> = ({ children, entity, onOk })
       label: template.template_name,
     }
   })
+
+  try {
+    if (entity && entity.time_range && typeof entity.time_range === "string") {
+      const tr: string[] = JSON.parse(entity.time_range)
+      entity.time_range = tr.map(t => new Date(t))
+    }
+  } catch (e) {
+    console.error(e)
+  }
 
   return (
     <>
@@ -205,21 +215,63 @@ const TemplateModal: React.FC<TemplateModalProps> = ({ children, entity, onOk })
             style={{ width: 176 }}
             helpText="视频保存格式。不支持stream-gears下载器和Youtube平台。"
           />
-
+          
           <Collapse keepDOM>
             <Collapse.Panel header="更多设置" itemKey="processors">
-              <Form.Input
+              <Form.TimePicker
                 field="time_range"
+                type="timeRange"
+                placeholder=" "
                 extraText={
                   <div style={{ fontSize: '14px' }}>
-                    格式：&apos;01:00:00-02:00:00&apos;（时:分:秒-时:分:秒）
+                    如果设置了录制时间范围，不在时间范围内，将不进行录制<br/>
+                    下载器需使用ffmpeg或streamlink
                   </div>
                 }
-                label="录制时间范围"
-                placeholder="01:00:00-02:00:00"
+                label={{ 
+                    text: '录制时间范围', 
+                    optional: true, 
+                    style: { 
+                        fontSize: '18px',
+                        marginBottom: '4px',
+                        paddingBottom: '8px',
+                        borderBottom: '1px solid var(--semi-color-border)',
+                    } 
+                }}
                 style={{ width: 176 }}
               />
-
+              
+              <ArrayField field="excluded_keywords">
+                {({ add, arrayFields }) => (
+                  <Form.Section text="不录制关键词">
+                    <div className="semi-form-field-extra">
+                      如果房间名包含关键词，则停止或不录制该场直播，每个关键词需单独一行<br/>
+                      暂不支持<strong>cc直播</strong>、<strong>yy直播</strong>、<strong>twitch直播</strong>
+                    </div>
+                    <Button icon={<IconPlusCircle />} onClick={add} theme="light">
+                      添加关键词
+                    </Button>
+                    {arrayFields.map(({ field, key, remove }, i) => (
+                      <div key={key} style={{ width: 1000, display: 'flex' }}>
+                        <Form.Input
+                          field={field}
+                          label={`关键词${i + 1}`}
+                          labelPosition="left"
+                          rules={[{ required: true, message }]}
+                        ></Form.Input>
+                        <Button
+                          type="danger"
+                          theme="borderless"
+                          icon={<IconMinusCircle />}
+                          onClick={remove}
+                          style={{ margin: 12 }}
+                        />
+                      </div>
+                    ))}
+                </Form.Section>
+                )}
+              </ArrayField>
+              
               <ArrayField field="preprocessor">
                 {({ add, arrayFields }) => (
                   <Form.Section text="下载前处理">
